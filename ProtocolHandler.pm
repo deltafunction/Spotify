@@ -5,6 +5,7 @@ use strict;
 use Scalar::Util qw(blessed);
 use JSON::XS::VersionOneAndTwo;
 use Scalar::Util qw(blessed);
+use Data::Dumper;
 
 use vars qw(@ISA);
 
@@ -23,6 +24,11 @@ use constant MAX_TRACK_REQUEST => 5; # max outstanding track requests before que
 my %fetching; # hash of track urls we are fetching, to avoid multiple fetches
 my @fetchQ;   # Q of tracks to fetch
 my $fetchInProgress = 0;
+
+my $lfmuser;
+my @spotitracks = ();
+my $lfmplaylist;
+my $popular;
 
 my $otherHandler;
 
@@ -56,7 +62,7 @@ sub new {
 
 	my $client = $args->{'client'};
 
-	if ($args->{'url'} =~ /spotify:artist|spotify:album|spotify:user:.*:playlist/) {
+	if ($args->{'url'} =~ /spotify:artist|spotify:album|spotify:user:.*:playlist|spotify:lfmuser:/) {
 		return undef;
 	}
 
@@ -103,6 +109,11 @@ sub formatOverride {
 
 	# this allows file types to be used to select format between pcm and flac streaming
 	return 'sflc';
+}
+
+sub audioScrobblerSource {
+	# P = Chosen by the user
+	return 'P';
 }
 
 sub getMetadataFor {
@@ -325,8 +336,118 @@ sub getSeekData {
 	return { timeOffset => $newtime };
 }
 
+sub getTrackFromSpotibotTest {
+	my @ret =  ("spotify:track:7n5XZSlCuNwMycgXrWLvyG");
+	return @ret;
+}
+
+sub getTracksFromSpotibotIna {
+	sleep 10;
+	my @ret =  ("spotify:track:7n5XZSlCuNwMycgXrWLvyG", "spotify:track:1cV8QbrzIx2vQXvPr7bT5P", "spotify:track:6IWj5DLtoSYUYNI52FHEyD", "spotify:track:70iXrOETHNdFJpEikr4h2C", "spotify:track:0BbJCTVFqPh1HmjVFzyUAS", "spotify:track:2Faj9h6Dr6ww0kZ6YRHTZj", "spotify:track:2OUlsjE0UMxMSaU9l2avEi", "spotify:track:1jP0sX5Xxq15AqtaWaEHqZ", "spotify:track:2EETNApjNwXOfSx5PXsJaJ", "spotify:track:2OsZ5nfvXUo5osfE7n0wH8", "spotify:track:0HtCH4hVpnWxm4g9KUqvA1", "spotify:track:18RDf2zsXxlX2YxTtwIxIl", "spotify:track:5k0mmBezwCm4Xqf4qJ9any", "spotify:track:4L1q10ARlY06kHRYATnUzR", "spotify:track:5cj7i83R2Taj8plBLhL2Ap", "spotify:track:5YSnG9hhXnEG86kv5LAN3F", "spotify:track:4nbqUfqKObLWhuUT7PWV1N", "spotify:track:2ynlVZq9XLQ33h3S9IXKKE", "spotify:track:3oFI9nb5Nw5tzvjSl0ERAZ", "spotify:track:7KxlQrTePk82UyI1Daz2Cr", "spotify:track:4M91TREqgYz47Pl6cSqMOj", "spotify:track:3mdRFEuvoOW07Ut4NfHW94", "spotify:track:3kKo4fsFvfuVrODTS7rvb6", "spotify:track:79f9PtjWfJzkgiGr0FLWOY", "spotify:track:4EQgIZr38YMgNgY28qZCPS", "spotify:track:5GtP1p7UOyx5SdFJ6JONXY", "spotify:track:3cHOKvdEvKnZaS7JxujUW0", "spotify:track:4QLhmfcOMVvSkDa08QmMHQ", "spotify:track:7G6IlcxptIlLGEFBOwg9Dr", "spotify:track:2d6m2u18196oYQS2mbaO6t", "spotify:track:7gMQC3vF8bumlsCRYBZNf2", "spotify:track:3snKcyy93cSqKNK5PkJJAs", "spotify:track:4XKNJ4VgJCXoNJw1TsFACO", "spotify:track:5Y0JZ2dN7mhTPdcNclvALj", "spotify:track:6IDvVnQpcc4uR5BknNRjUP", "spotify:track:6EynStBDgYaPAjVSaRvgVE", "spotify:track:0SEZEPwA3LycZGaWEu7XXO", "spotify:track:61MKJwrvz9lMpNeTc3Rfex", "spotify:track:0TTcP3tiv87HdUqtLIetRm", "spotify:track:4RaaUeDpCPv29CBSqjxuGi", "spotify:track:2Q6WTCwEL3gF3aVrgSb9eA", "spotify:track:1sWgLAjdeFc9PhRiP5ZCVv", "spotify:track:77PmEwWYRKFPVBGjLnP33J", "spotify:track:0Tc6bCo3b7fAT5vxZ5oqdI", "spotify:track:2deVzEBjaynWlasbsSFZWf", "spotify:track:0OqDrOXJ55kZLGjayLyW4v", "spotify:track:79AXOZkJgm7y61VpXBZuQS", "spotify:track:5AWp3Nwggtm1s2N0DqCHWf", "spotify:track:2F5UTsmNPONw0d125sDKgF", "spotify:track:4AsHoTefryKVz8YHLpvJuc");
+	return @ret;
+}
+
+sub getTracksFromSpotibot {
+	my $lfmuser = shift;
+	my $lfmplaylist = shift;
+	my $popular = shift;
+	my $cmd = "/usr/local/bin/spotibot.sh --tracks 50 --identity $lfmuser";
+	if($lfmplaylist eq "loved"){
+		$cmd .= " --loved";
+	}
+	elsif($lfmplaylist eq "recommended"){
+		$cmd .= " --recommended";
+	}
+	elsif($lfmplaylist eq "mix"){
+		$cmd .= " --recommended --loved";
+	}
+	if(defined($popular)){
+		$cmd .= " --popular";
+	}
+	$log->info("Getting spotibot tracks with ".$cmd);
+	my $ret = `$cmd`;
+	$log->info("got spotibot tracks: ".$ret);
+	#return split(",", $ret);
+	my @tracks = @{from_json($ret)};
+	return @tracks;
+}
+
+sub getLastfmTracks {
+	my $lfmuser = shift;
+	my $lfmplaylist = shift;
+	my $cmd = "/usr/local/bin/get_lfm_tracks.sh --username $lfmuser --tracks 20 --algorithm ";
+	if($lfmplaylist eq "library"){
+		$cmd .= "Library  --loved 0 --popular 0 --library 1";
+	}
+	if($lfmplaylist eq "loved"){
+		$cmd .= "Library --loved 1 --popular 0 --library 1";
+	}
+	if($lfmplaylist eq "library_similar"){
+		$cmd .= "Similar --loved 0 --popular 0 --library 0";
+	}
+	if($lfmplaylist eq "loved_similar"){
+		$cmd .= "Similar --loved 1 --popular 0 --library 0";
+	}
+	if($lfmplaylist eq "top_similar"){
+		$cmd .= "Popular --loved 0 --popular 0 --library 0";
+	}
+	if($lfmplaylist eq "top_similar_top"){
+		$cmd .= "Popular --loved 0 --popular 1 --library 0";
+	}
+	if($lfmplaylist eq "neighbours"){
+		$cmd .= "Neighbours --loved 1 --popular 1 --library 1";
+	}
+	if($lfmplaylist eq "friends"){
+		$cmd .= "Friends --loved 1 --popular 1 --library 1";
+	}
+	if($lfmplaylist eq "mix"){
+		$cmd .= "Mix --loved 1 --popular 0 --library 1";
+	}
+	$log->info("Getting tracks from LastFM and Spotify with ".$cmd);
+	my $ret = `$cmd`;
+	$log->info("got tracks: ".$ret);
+	my @tracks = @{from_json($ret)};
+	return @tracks;
+}
+
 sub getNextTrack {
 	my ($class, $song, $successCb, $errorCb) = @_;
+
+	$log->info("next track ".$song->track->url);
+
+	if ($song->track->url =~ /^spotify:lfmuser:.*:library:.*/) {
+		return;
+	}
+
+	if ($song->track->url =~ /^spotify:lfmuser:.*:playlist:.*/) {
+		if($song->track->url =~ /^spotify:lfmuser:([^:]+):.*/){
+			$lfmuser =$1;
+		}
+		if($song->track->url =~ /^spotify:lfmuser:[^:]+:playlist:([^:]+)/){
+			$lfmplaylist =$1;
+		}
+		if($song->track->url =~ /^spotify:lfmuser:[^:]+:playlist:([^:]+):popular:(.*)$/){
+			$lfmplaylist =$1;
+			$popular =$2;
+		}
+		#@spotitracks = getTracksFromSpotibot($lfmuser, $lfmplaylist, $popular);
+		@spotitracks = getLastfmTracks($lfmuser, $lfmplaylist);
+		my $uri = shift(@spotitracks);
+		Slim::Utils::Timers::setTimer(undef, Time::HiRes::time(), sub {
+			$song->master->execute([ 'spotifyplcmd', 'cmd:load', "uri:$uri" ]);
+		});
+		foreach $uri (@spotitracks){
+			sleep 0.3;
+			Slim::Utils::Timers::setTimer(undef, Time::HiRes::time()+10, sub {
+				$song->master->execute([ 'spotifyplcmd', 'cmd:add', "uri:$uri" ]);
+			});
+		}
+		# Not working
+		#Slim::Utils::Timers::setTimer(undef, Time::HiRes::time()+20, sub {
+		#	$song->master->execute([ 'spotifyplcmd', 'cmd:add', "uri:".$song->track->url ]);
+		#});
+		@spotitracks = ();
+	}
 
 	if ($song->track->url =~ /spotify:artist|spotify:album|spotify:user:.*:playlist/) {
 		my $uri = $song->track->url;

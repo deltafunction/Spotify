@@ -12,9 +12,15 @@ use vars qw(@ISA);
 
 use JSON::XS::VersionOneAndTwo;
 use File::Spec::Functions;
+use Data::Dumper;
+use URI::Escape qw(uri_escape_utf8 uri_unescape);
+
+use WebService::Spotify;
+use WebService::Spotify::OAuth2;
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
+use Slim::Player::Playlist;
 
 use Slim::Utils::Strings qw(string cstring);
 
@@ -30,6 +36,12 @@ my $log;
 my $compat;
 my $prefs  = preferences('plugin.spotify');
 my $sprefs = preferences('server');
+my @spotitracks = undef;
+my $username = $prefs->get('username');
+my $scope = 'playlist-modify-public';
+my $sp_oauth;
+my $selfurl = 'http://paloma:9000/plugins/spotify/index.html';
+my $playlist_name = "SqueezeTracks";
 
 BEGIN {
 	$log = Slim::Utils::Log->addLogCategory({
@@ -142,6 +154,7 @@ sub initPlugin {
 
 	# create our own playlist command to allow playlist actions without setting title
 	Slim::Control::Request::addDispatch(['spotifyplcmd'], [1, 0, 1, \&plCommand]);
+
 }
 
 sub postinitPlugin {
@@ -152,6 +165,9 @@ sub postinitPlugin {
 
 	# add here to replace any existing entry
 	Slim::Control::Request::addDispatch(['spotify', 'star', '_uri', '_val'], [1, 0, 0, \&cliStar]);
+
+	# If sent back from Spotify OAuth, parse code, get token and execute command (save playlist)
+	Slim::Control::Request::addDispatch(['spotify', 'spotifyactioncmd',  '_url_query', '_cb'], [1, 0, 1, \&actionCommand]);
 }
 
 sub shutdownPlugin {
@@ -192,12 +208,95 @@ sub toplevel {
 	);
 
 	if (my $user = $prefs->get('lastfmuser')) {
-		push @menu, { name => string('PLUGIN_SPOTIFY_RECOMMENDED_ARTISTS'), 
-					  url => \&level, passthrough => [ 'LastFM', { user => $user } ], type => 'link' };
+		# push @menu, { name => string('PLUGIN_SPOTIFY_RECOMMENDED_ARTISTS'), 
+		# 			  url => \&level, passthrough => [ 'LastFM', { user => $user } ], type => 'link' };
+# 		push @menu, {
+# 		name => 'lastfmpl',
+# 		type => 'audio',
+# 		url  => 'spotify:user:1133682195:playlist:0WYedJjKQvX9MtRv6hriEI',
+# 		};
+		# push @menu, {
+		# name => "LastFM Spotibot mix",
+		# type => "audio",
+		# url  => "spotify:lfmuser:$user:playlist:mix",
+		# };
+		# push @menu, {
+		# name => "LastFM Spotibot recommended",
+		# type => "audio",
+		# url  => "spotify:lfmuser:$user:playlist:recommended",
+		# };
+		# push @menu, {
+		# name => "LastFM loved",
+		# type => "audio",
+		# url  => "spotify:lfmuser:$user:playlist:loved",
+		# };
+		# push @menu, {
+		# name => "LastFM library",
+		# type => "audio",
+		# url  => "spotify:lfmuser:$user:library:music",
+		# };
+		push @menu, {
+		name => "LastFM library",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:library",
+		};
+		push @menu, {
+		name => "LastFM loved",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:loved",
+		};
+		push @menu, {
+		name => "LastFM recommended from library",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:library_similar",
+		};
+		push @menu, {
+		name => "LastFM recommended from loved",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:loved_similar",
+		};
+		push @menu, {
+		name => "LastFM recommended from top",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:top_similar",
+		};
+		push @menu, {
+		name => "LastFM top recommended from top",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:top_similar_top",
+		};
+		push @menu, {
+		name => "LastFM neighbours",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:neighbours",
+		};
+		push @menu, {
+		name => "LastFM friends",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:friends",
+		};
+		push @menu, {
+		name => "LastFM mix",
+		type => "audio",
+		url  => "spotify:lfmuser:$user:playlist:mix",
+		};
+
+		if(defined($args->{'params'}->{'userAgent'})){
+			push @menu, {
+			name => "Save now playing to Spotify",
+			type => "link",
+			url => \&saveNowPlaying,
+			'jivemenu' => 0,
+			'playermenu' => 0,
+			'webmenu' => 1,
+			};
+		}
 	};
 
 	push @menu, { name => string('PLUGIN_SPOTIFY_SEARCHURI'), type => 'search', url => \&wrapper };
 
+	$client->execute([ 'spotify', 'spotifyactioncmd', $args->{'params'}->{'url_query'}, $callback ]);
+	
 	$callback->(\@menu);
 }
 
@@ -361,11 +460,35 @@ sub plCommand {
 		$query = "$uri/playlists.json";
 	} elsif ($uri eq 'toptracks') {
 		$query = "toplist.json?q=tracks&r=" . ($prefs->get('location') || 'user');
-	}
-	
+	} elsif ($uri =~ /^spotify:lfmuser:.*:playlist:.*/) {
+		my @objs;
+		my $obj = Slim::Schema::RemoteTrack->updateOrCreate($uri, {
+		});
+		push @objs, $obj;
+		#$client->showBriefly({ line => [ string('PLUGIN_SPOTIFY'), 'Fetching tracks from LastFM' ] },  { block => 1, duration => 17 });
+		Slim::Utils::Timers::setTimer(undef, Time::HiRes::time()+30, sub {
+			$client->execute([ 'playlist', "${cmd}tracks", 'listref', \@objs, undef, $ind ]);
+		});
+	} elsif ($uri =~ /^(spotify:lfmuser:.*:library):(.*)/) {
+		my $base = $1;
+		my $lib = $2;
+		my $page = "2";
+		if($lib =~ /^(.*):(.*)$/){
+			$lib = $1;
+			$page = $2 + "1";
+		}
+		my @objs;
+		my $obj = Slim::Schema::RemoteTrack->updateOrCreate($base.":".$lib.":".$page, {
+		});
+		push @objs, $obj;
+		#$client->showBriefly({ line => [ string('PLUGIN_SPOTIFY'), 'Fetching tracks from LastFM' ] },  { block => 1, duration => 17 });
+		Slim::Utils::Timers::setTimer(undef, Time::HiRes::time()+240, sub {
+			$client->execute([ 'playlist', "${cmd}tracks", 'listref', \@objs, undef, $ind ]);
+		});
+	} 	
 	if ($query) {
 	
-		$log->info("fetching play info: $query");
+		$log->warn("fetching play info: $query");
 
 		Slim::Networking::SimpleAsyncHTTP->new(
 			sub {
@@ -661,7 +784,6 @@ sub searchInfoMenu {
 
 sub cliStar {
 	my $request = shift;
- 
 	my $client = $request->client;
 	my $uri = $request->getParam('_uri');
 	my $val = $request->getParam('_val');
@@ -680,6 +802,135 @@ sub cliStar {
 	}
 																
 	$request->setStatusDone;
+}
+
+sub saveNowPlaying {
+	my ($client, $callback, $args) = @_;
+
+# 	my $query = "spotify:user:1133682195:playlist:0WYedJjKQvX9MtRv6hriEI/playlists.json";
+# 	Slim::Networking::SimpleAsyncHTTP->new(
+# 		sub {
+# 			my $json = eval { from_json($_[0]->content) };
+# 			$log->warn("Got playlists ".Dumper($json));
+# 			if ($@) {
+# 				$log->warn("bad json: $@");
+# 				return;
+# 			}
+# 		},
+# 		sub { $log->warn("error: $_[1]") }
+# 	)->get(Plugins::Spotify::Spotifyd->uri($query));
+
+	$log->warn("spotify username: ".$prefs->get('username'));
+
+	my $token_info;
+	if($sp_oauth){
+		$token_info = $sp_oauth->get_cached_token;
+	}
+	if($token_info){
+		my @tracks = getTracks($client);
+		my $token = $token_info->{access_token};
+		if ($token) {
+			my $sp = WebService::Spotify->new(auth => $token);
+			my $playlist = $sp->user_playlist_create($prefs->get('username'), $playlist_name);
+			$log->warn("Created new playlist: ".Dumper($playlist));
+			my $results = $sp->user_playlist_add_tracks($prefs->get('username'), $playlist->{'id'}, [@tracks]);
+			$log->warn("Added tracks to new playlist: ".Dumper($results));
+		} else {
+			$log->warn("Can't get token for ".$prefs->get('username'));
+		}
+		my @menu = ({
+				name  => "Playlist saved to Spotify",
+				type => 'text',
+				'jivemenu' => 1,
+				'playermenu' => 0,
+				'webmenu' => 1,
+			});
+		$callback->(\@menu);
+	}
+	else{
+		my $auth_url = get_auth_url($client, $callback, $args);
+		$callback->( {
+			items => [{
+				type => 'text',
+				name => '<a href="'.$auth_url.'">Click to authenticate</a>',
+				wrap => 0,
+				showBriefly => 10,
+				favorites   => 10,
+			}]
+		}, @_ );
+	}
+}
+
+sub getTracks(){
+	my $client = shift;
+	my $songCount = Slim::Player::Playlist::count($client);
+	my @songs = Slim::Player::Playlist::songs($client, 0, $songCount);
+	my $url;
+	my $name;
+	my @tracks = ();
+	my $artist;
+	my $album;
+	while (my $song = shift @songs ) {
+		if($song->url =~ /^spotify:track:.*/){
+			$url = $song->url;
+		}
+		else{
+			$name = $song->name;
+			#$name =~ s/^\s+//;
+			#$name =~ s/\s+$//;
+			if($name ne ""){
+				$name = uri_escape_utf8($name);
+				$artist = $song->artist?uri_escape_utf8($song->artist->name):'';
+				$album = $song->album?uri_escape_utf8($song->album->name):'';
+				#$url =  `curl -L "http://api.spotify.com/v1/search?type=track&q=artist:$artist+album:$album+track:$name" | grep '"uri" : "spotify:track:' | head -1 | awk -F' : ' '{print \$2}' | sed 's|"||g'"'`;
+				# TODO: Do this in perl.
+				$url =  `/home/fjob/bin/mycurl "http://api.spotify.com/v1/search?type=track&q=artist:$artist+album:$album+track:$name" | grep '"uri" : "spotify:track:' | head -1 | awk -F' : ' '{print \$2}' | sed 's|"||g'`;
+			}
+		}
+		if($url){
+			$log->warn("Adding track ".$url);
+			push(@tracks, $url);
+		}
+		else{
+			$log->warn("Could not find track: artist:$artist+album:$album+track:$name");
+		}
+	}
+	return @tracks;
+}
+
+sub actionCommand {
+	my $request = shift;
+	my $client = $request->client;
+	my $code;
+	$log->warn("Checking for code in request. ".$request->getParam('_url_query'));
+	if($request->getParam('_url_query')=~/^code=(.*)$/){
+		$code = $1;
+	}
+	if($code){
+		get_sp_oauth();
+		my $token_info = $sp_oauth->get_access_token($code);
+		my $callback = $request->getParam('_cb');
+		saveNowPlaying($client, $callback);
+	}
+}
+
+sub get_sp_oauth {
+  if(!$sp_oauth){
+    $sp_oauth = WebService::Spotify::OAuth2->new(
+    client_id        => '315ea12ceee14b3fb63d4fd17a2684e0', 
+    client_secret => 'c5f080e6586d4906942bcfd499059803', 
+    redirect_uri   => $selfurl,
+    cache_path   => '/tmp/'.$username.'_oauth',
+    trace            => 0,
+    );
+  }
+}
+
+sub get_auth_url {
+  my ($client, $callback, $args) = @_;
+  get_sp_oauth();
+  $sp_oauth->scope($scope) if $scope;
+  return $sp_oauth->get_authorize_url;
 }
 
 1;
