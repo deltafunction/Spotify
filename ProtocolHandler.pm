@@ -442,8 +442,9 @@ sub getNextTrack {
 				$song->master->execute([ 'spotifyplcmd', 'cmd:add', "uri:$uri" ]);
 			});
 		}
-		# Not working
-		#Slim::Utils::Timers::setTimer(undef, Time::HiRes::time()+20, sub {
+		# This loads a recursive last track. The delay must be long enough to allow all
+		# tracks to load first.
+		#Slim::Utils::Timers::setTimer(undef, Time::HiRes::time()+120, sub {
 		#	$song->master->execute([ 'spotifyplcmd', 'cmd:add', "uri:".$song->track->url ]);
 		#});
 		@spotitracks = ();
